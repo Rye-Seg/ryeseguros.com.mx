@@ -6,6 +6,11 @@
 <title>RYE Seguros — Protege lo que más importa</title>
 <meta name="description" content="RYE Seguros: cotiza seguros de auto, moto, Uber, Didi, reparto, pickups y flotillas con opciones de aseguradoras del mercado.">
 <meta name="theme-color" content="#0d2d6e">
+<!-- Favicon RYE Seguros -->
+<link rel="icon" type="image/x-icon" href="favicon.ico">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon.ico">
+<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&family=Open+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root {
@@ -1476,31 +1481,221 @@
 </script>
 
 <script>
-  // Punto de conexión futuro: configurar esta URL cuando exista la API/Supabase del CRM.
+  // ─── Punto de conexión n8n / Supabase ───────────────────────────────────────
+  // Cuando tengas n8n en Neubox, reemplaza esta línea con la URL del webhook:
+  //   window.RYE_LEAD_API = 'https://tu-n8n.neubox.com/webhook/rye-leads';
+  // Mientras sea '/api/leads' el flujo va directo a WhatsApp (ver abajo).
   window.RYE_LEAD_API = window.RYE_LEAD_API || '/api/leads';
+
+  // ─── Número de WhatsApp Sara / RYE Seguros ───────────────────────────────
+  var RYE_WA_NUMBER = '525523003568'; // 55 2300 3568 → formato internacional
+
   async function enviarCotizacion() {
     var section = document.querySelector('#cotizar');
     var value = function(id){ return document.getElementById(id)?.value.trim() || ''; };
+
+    // Captura de datos del formulario
     var payload = {
-      origen: 'portal_web', canal: 'web', tipo: value('leadTipo') || 'cotizacion', ramo: value('leadRamo') || 'auto', uso: value('leadUso') || 'particular',
-      unidad: { anno: value('leadAnno'), marca: value('leadMarca'), descripcion: value('leadDescripcion'), cp: value('leadCp'), vin: value('leadVin') },
-      contacto: { nombre: value('leadNombre'), fechaNacimiento: document.getElementById('leadNacimiento')?.value || '', genero: value('leadGenero'), telefono: value('leadTelefono'), correo: value('leadCorreo') },
-      fechaCaptura: new Date().toISOString(), consentimiento: false
+      origen: 'portal_web', canal: 'web',
+      tipo:   value('leadTipo') || 'cotizacion',
+      ramo:   value('leadRamo') || 'auto',
+      uso:    value('leadUso')  || 'particular',
+      unidad: {
+        anno:        value('leadAnno'),
+        marca:       value('leadMarca'),
+        descripcion: value('leadDescripcion'),
+        cp:          value('leadCp'),
+        vin:         value('leadVin')
+      },
+      contacto: {
+        nombre:          value('leadNombre'),
+        fechaNacimiento: document.getElementById('leadNacimiento')?.value || '',
+        genero:          value('leadGenero'),
+        telefono:        value('leadTelefono'),
+        correo:          value('leadCorreo')
+      },
+      fechaCaptura: new Date().toISOString(),
+      consentimiento: false
     };
-    if (!payload.contacto.nombre && !payload.contacto.telefono && !payload.contacto.correo) { alert('Por favor captura al menos un dato de contacto.'); return; }
-    var terms=document.getElementById('terms'); if(!terms || !terms.checked){ alert('Acepta los Términos y Condiciones y el Aviso de Privacidad para continuar.'); return; }
+
+    // Validaciones básicas
+    if (!payload.contacto.nombre && !payload.contacto.telefono && !payload.contacto.correo) {
+      _ryeAlertForm('Por favor captura al menos un dato de contacto (nombre, teléfono o correo).'); return;
+    }
+    var terms = document.getElementById('terms');
+    if (!terms || !terms.checked) {
+      _ryeAlertForm('Acepta los Términos y Condiciones y el Aviso de Privacidad para continuar.'); return;
+    }
     payload.consentimiento = true;
-    var button=section.querySelector('.btn-submit'); var original=button.textContent; button.disabled=true; button.textContent='Enviando solicitud…';
-    try {
-      var response=await fetch(window.RYE_LEAD_API,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-      var result=await response.json();
-      if(!response.ok) throw new Error(result.error || 'API no disponible');
-      alert('Recibimos tu solicitud. Folio: '+(result.lead?.leadNumber || 'pendiente')+'. El sistema continuará la cotización por el canal que registraste.');
-      section.querySelectorAll('input').forEach(function(input){ if(input.type !== 'checkbox') input.value=''; });
-      section.querySelectorAll('select').forEach(function(select){ select.selectedIndex=0; });
-    } catch(e) {
-      alert('No pudimos registrar tu solicitud en este momento. Intenta nuevamente más tarde.');
-    } finally { button.disabled=false; button.textContent=original; }
+
+    // Estado del botón
+    var button = section.querySelector('.btn-submit');
+    var original = button.textContent;
+    button.disabled = true;
+    button.textContent = 'Preparando solicitud…';
+
+    // ─── Paso 1: intentar n8n / API si ya está configurado ──────────────────
+    var apiActiva = window.RYE_LEAD_API && window.RYE_LEAD_API !== '/api/leads';
+    if (apiActiva) {
+      try {
+        var response = await fetch(window.RYE_LEAD_API, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        var result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'API no disponible');
+        // n8n recibió el lead → Sara contactará al cliente automáticamente
+        _ryeMostrarConfirmacion(payload, result.lead?.leadNumber || null, 'api');
+        _ryeLimpiarFormulario(section);
+        button.disabled = false; button.textContent = original;
+        return;
+      } catch(e) {
+        console.warn('[RYE] API no disponible, usando flujo WhatsApp.', e);
+      }
+    }
+
+    // ─── Paso 2: flujo WhatsApp directo (disponible ahora mismo) ────────────
+    button.textContent = 'Abriendo WhatsApp…';
+
+    // Construir mensaje estructurado para Sara / asesor RYE
+    var g = { 'Masculino':'Hombre', 'Femenino':'Mujer', 'No especificado':'No especificado' };
+    var ramoLabel = {
+      auto:'Auto', moto:'Moto', camion:'Camión', vida:'Vida',
+      gastos_medicos:'Gastos Médicos', casa:'Casa / Hogar', negocio:'Negocio'
+    };
+    var tipoLabel = { cotizacion:'Cotización', renovacion:'Renovación', informacion:'Información general' };
+
+    var lineas = [
+      '🛡️ *NUEVA SOLICITUD RYE SEGUROS*',
+      '━━━━━━━━━━━━━━━━━━━━━━━━',
+      '',
+      '📋 *TIPO DE SOLICITUD*',
+      '• Trámite: ' + (tipoLabel[payload.tipo] || payload.tipo),
+      '• Ramo: ' + (ramoLabel[payload.ramo] || payload.ramo),
+      '• Uso: ' + payload.uso,
+      ''
+    ];
+
+    // Datos del vehículo / unidad (solo si aplica)
+    var u = payload.unidad;
+    if (u.anno || u.marca || u.descripcion) {
+      lineas.push('🚗 *UNIDAD A ASEGURAR*');
+      if (u.anno)        lineas.push('• Año: '        + u.anno);
+      if (u.marca)       lineas.push('• Marca: '      + u.marca);
+      if (u.descripcion) lineas.push('• Modelo: '     + u.descripcion);
+      if (u.cp)          lineas.push('• C.P.: '       + u.cp);
+      if (u.vin)         lineas.push('• VIN / Serie: ' + u.vin);
+      lineas.push('');
+    }
+
+    // Datos del cliente
+    var c = payload.contacto;
+    lineas.push('👤 *DATOS DEL SOLICITANTE*');
+    if (c.nombre)          lineas.push('• Nombre: '    + c.nombre);
+    if (c.fechaNacimiento) lineas.push('• F. Nac.: '   + c.fechaNacimiento);
+    if (c.genero)          lineas.push('• Género: '    + (g[c.genero] || c.genero));
+    if (c.telefono)        lineas.push('• Teléfono: '  + c.telefono);
+    if (c.correo)          lineas.push('• Correo: '    + c.correo);
+    lineas.push('');
+    lineas.push('━━━━━━━━━━━━━━━━━━━━━━━━');
+    lineas.push('📅 ' + new Date().toLocaleString('es-MX', {timeZone:'America/Mexico_City'}));
+    lineas.push('🌐 Origen: rieseguros.com.mx');
+
+    var mensaje = lineas.join('\n');
+    var url = 'https://wa.me/' + RYE_WA_NUMBER + '?text=' + encodeURIComponent(mensaje);
+
+    // Abrir WhatsApp en nueva pestaña
+    window.open(url, '_blank');
+
+    // Mostrar confirmación visual
+    _ryeMostrarConfirmacion(payload, null, 'whatsapp');
+    _ryeLimpiarFormulario(section);
+    button.disabled = false;
+    button.textContent = original;
+  }
+
+  // ─── Helpers de UI ────────────────────────────────────────────────────────
+  function _ryeAlertForm(msg) {
+    // Alerta inline más elegante que alert()
+    var existing = document.getElementById('rye-form-alert');
+    if (existing) existing.remove();
+    var div = document.createElement('div');
+    div.id = 'rye-form-alert';
+    div.style.cssText = 'background:#fef2f2;border:1px solid #fca5a5;color:#991b1b;border-radius:10px;padding:12px 16px;font-size:14px;margin-top:12px;text-align:left;';
+    div.textContent = '⚠️ ' + msg;
+    var btn = document.querySelector('#cotizar .btn-submit');
+    if (btn) btn.parentNode.insertBefore(div, btn.nextSibling);
+    setTimeout(function(){ if(div.parentNode) div.remove(); }, 5000);
+  }
+
+  function _ryeLimpiarFormulario(section) {
+    section.querySelectorAll('input').forEach(function(input){
+      if (input.type !== 'checkbox') input.value = '';
+    });
+    section.querySelectorAll('select').forEach(function(select){
+      select.selectedIndex = 0;
+    });
+    var terms = document.getElementById('terms');
+    if (terms) terms.checked = false;
+    var alerta = document.getElementById('rye-form-alert');
+    if (alerta) alerta.remove();
+  }
+
+  function _ryeMostrarConfirmacion(payload, folio, canal) {
+    // Overlay de confirmación premium
+    var existing = document.getElementById('rye-confirmacion-overlay');
+    if (existing) existing.remove();
+
+    var nombre = payload.contacto.nombre ? payload.contacto.nombre.split(' ')[0] : 'Cliente';
+    var fechaStr = new Date().toLocaleString('es-MX', {
+      timeZone: 'America/Mexico_City', day:'2-digit', month:'long', year:'numeric',
+      hour:'2-digit', minute:'2-digit'
+    });
+
+    var contenidoApi = folio
+      ? '<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:10px;padding:14px 18px;margin-bottom:20px;color:#166534;font-size:14px;">'
+        + '✅ Folio registrado: <strong>#' + folio + '</strong><br>'
+        + '<span style="font-size:12px;opacity:.8;">Sara (nuestra IA) te contactará en menos de 10 segundos.</span>'
+        + '</div>'
+      : '';
+
+    var contenidoWA = canal === 'whatsapp'
+      ? '<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:10px;padding:14px 18px;margin-bottom:20px;color:#166534;font-size:14px;">'
+        + '✅ Se abrió WhatsApp con tu información prellenada.<br>'
+        + '<span style="font-size:12px;opacity:.8;">Envía el mensaje y un asesor RYE te responderá en breve.</span>'
+        + '</div>'
+      : '';
+
+    var html = '<div id="rye-confirmacion-overlay" style="position:fixed;inset:0;background:rgba(11,21,38,0.75);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px;">'
+      + '<div style="background:#fff;border-radius:20px;max-width:460px;width:100%;padding:40px 36px;text-align:center;box-shadow:0 24px 60px rgba(0,0,0,0.3);font-family:Montserrat,sans-serif;">'
+      + '<div style="width:72px;height:72px;background:linear-gradient(135deg,#2563eb,#1d4ed8);border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:32px;">🛡️</div>'
+      + '<h2 style="font-size:22px;font-weight:800;color:#0b1526;margin:0 0 8px;">¡Solicitud enviada, ' + _ryeEscape(nombre) + '!</h2>'
+      + '<p style="color:#64748b;font-size:14px;margin:0 0 24px;line-height:1.6;">Recibimos tu solicitud de cotización.<br>Un asesor RYE se pondrá en contacto contigo muy pronto.</p>'
+      + contenidoApi
+      + contenidoWA
+      + '<div style="background:#f8fafc;border-radius:10px;padding:14px 18px;margin-bottom:24px;text-align:left;font-size:13px;color:#334155;">'
+      + '<div style="font-weight:700;color:#0b1526;margin-bottom:8px;">📋 Resumen de tu solicitud</div>'
+      + '<div>• <strong>Ramo:</strong> ' + _ryeEscape(payload.ramo) + '</div>'
+      + (payload.unidad.marca ? '<div>• <strong>Vehículo:</strong> ' + _ryeEscape(payload.unidad.anno + ' ' + payload.unidad.marca + ' ' + payload.unidad.descripcion).trim() + '</div>' : '')
+      + (payload.contacto.telefono ? '<div>• <strong>Teléfono:</strong> ' + _ryeEscape(payload.contacto.telefono) + '</div>' : '')
+      + '<div style="margin-top:8px;font-size:11px;color:#94a3b8;">' + fechaStr + '</div>'
+      + '</div>'
+      + '<button onclick="document.getElementById(\'rye-confirmacion-overlay\').remove()" '
+      + 'style="background:linear-gradient(135deg,#2563eb,#1d4ed8);color:#fff;font-family:Montserrat,sans-serif;font-weight:700;font-size:15px;padding:14px 40px;border:none;border-radius:50px;cursor:pointer;width:100%;transition:opacity .2s;" '
+      + 'onmouseover="this.style.opacity=\'.88\'" onmouseout="this.style.opacity=\'1\'">Entendido ✓</button>'
+      + '</div></div>';
+
+    document.body.insertAdjacentHTML('beforeend', html);
+
+    // Cerrar al hacer clic fuera del card
+    document.getElementById('rye-confirmacion-overlay').addEventListener('click', function(e){
+      if (e.target === this) this.remove();
+    });
+  }
+
+  function _ryeEscape(str) {
+    return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
 </script>
 
